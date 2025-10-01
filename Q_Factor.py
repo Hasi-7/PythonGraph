@@ -19,7 +19,7 @@ known_sigma = None  # e.g., 0.002
 # ----------------------------
 
 # Load data (angle in radians in column 1, time in column 2)
-data = np.loadtxt('QFactorGraph.txt', skiprows=1)
+data = np.loadtxt('QFactorGraph2.txt', skiprows=1)
 theta_data = data[:, 0]  # Angle (radians)
 t_data = data[:, 1]      # Time (seconds)
 
@@ -66,20 +66,51 @@ sigma_Q = np.sqrt(var_Q) if var_Q >= 0 else np.nan
 print(f"Q = {Q:.6g} ± {sigma_Q:.2g}")
 
 # Find peaks (local maxima) for envelope
-peaks, _ = find_peaks(theta_data)
-t_peaks = t_data[peaks]
-theta_peaks = theta_data[peaks]
+# Find peaks (indices of local maxima)
+# --- Peaks and envelope (safe) ---
+peaks, _ = find_peaks(theta_data, prominence=0.001)  # tune as needed
 
-# Fit exponential decay to peaks for envelope
-exp_guess = [np.max(theta_peaks), 10]  # Initial guess: [A, tau]
-exp_params, exp_pcov = curve_fit(exp_decay, t_peaks, theta_peaks, p0=exp_guess, maxfev=10000)
-A_fit, tau_fit = exp_params
+have_peaks = peaks.size > 0
+A_fit = tau_fit = None
+t_peaks = theta_peaks = None
 
-# ---- NEW: 1σ uncertainties for envelope parameters ----
-exp_perr = np.sqrt(np.diag(exp_pcov))
-print("Exponential envelope fit (1σ):")
-print(f"  A   = {A_fit:.6g} ± {exp_perr[0]:.2g}")
-print(f"  tau = {tau_fit:.6g} ± {exp_perr[1]:.2g} s")
+if have_peaks:
+    t_peaks = t_data[peaks]          # time at peaks
+    theta_peaks = theta_data[peaks]  # angles at peaks
+
+    exp_guess = [np.max(np.abs(theta_peaks)), 10.0]  # [A, tau]
+    exp_params, exp_pcov = curve_fit(
+        exp_decay,
+        t_peaks,
+        np.abs(theta_peaks),
+        p0=exp_guess,
+        maxfev=20000
+    )
+    A_fit, tau_fit = exp_params
+    exp_perr = np.sqrt(np.diag(exp_pcov))
+
+    print("Exponential envelope fit (1σ):")
+    print(f"  A   = {A_fit:.6g} ± {exp_perr[0]:.2g} rad")
+    print(f"  tau = {tau_fit:.6g} ± {exp_perr[1]:.2g} s")
+
+    # Plot the envelope *inside* the same block so t_peaks is defined
+    plt.plot(t_peaks, exp_decay(t_peaks, *exp_params), 'g--', label='Exponential Envelope Fit')
+    plt.scatter(t_peaks, theta_peaks, color='green', s=30, label='Envelope Peaks')
+else:
+    print("No peaks found — skipping exponential envelope fit.")
+
+Q2 = np.pi * tau_fit / fitted_T
+# Uncertainty for Q2 using error propagation
+sigma_tau_fit = exp_perr[1]   # from exponential envelope fit
+sigma_T = perr[2]             # from damped cosine fit
+
+sigma_Q2 = np.sqrt(
+    (np.pi / fitted_T * sigma_tau_fit)**2 +
+    ((-np.pi * tau_fit / (fitted_T**2)) * sigma_T)**2
+)
+
+print(f"Q2 = {Q2:.6g} ± {sigma_Q2:.2g}")
+
 
 t_start, t_end = t_data[0], t_data[-1]
 
@@ -97,8 +128,36 @@ t_fit = np.linspace(np.min(t_data), np.max(t_data), 1000)
 theta_fit = theta_func(t_fit, *params)
 plt.plot(t_fit, theta_fit, color='blue', label='Fitted Damped Cosine')
 
-plt.plot(t_peaks, exp_decay(t_peaks, *exp_params), 'g--', label='Exponential Envelope Fit')
-plt.scatter(t_peaks, theta_peaks, color='green', s=30, label='Envelope Peaks')
+if have_peaks:
+    plt.plot(t_peaks, exp_decay(t_peaks, *exp_params), 'g--', label='Exponential Envelope Fit')
+    plt.scatter(t_peaks, theta_peaks, color='green', s=30, label='Envelope Peaks')
+
+# 🔑 Always put these AFTER all plot() and scatter() calls
+plt.xlabel('Time (s)')
+plt.ylabel(r'Angle $\theta(t)$ [radians]')
+plt.title(r'Damped Pendulum Fit: $\theta(t) = \theta_0 e^{-t/\tau} \cos(2\pi t/T + \phi_0)$')
+
+plt.legend()
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+
+t_fit = np.linspace(np.min(t_data), np.max(t_data), 1000)
+theta_fit = theta_func(t_fit, *params)
+plt.plot(t_fit, theta_fit, color='blue', label='Fitted Damped Cosine')
+
+if have_peaks:
+    # Make a new figure for the exponential envelope fit
+    plt.figure(figsize=(10, 6))
+    plt.scatter(t_peaks, theta_peaks, color='red', s=25, label='Envelope Peaks')
+    plt.plot(t_peaks, exp_decay(t_peaks, *exp_params), 'g--', lw=2, label='Exponential Envelope Fit')
+
+    # Add axis labels and title
+    plt.xlabel('Time (s)')
+    plt.ylabel(r'Amplitude $A(t)$ [radians]')
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
 
 plt.xlabel('Time (s)')
 plt.ylabel(r'Angle $\theta(t)$ [radians]')
