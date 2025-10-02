@@ -160,8 +160,6 @@ if have_peaks and t_left and t_right:
 
     ax1.scatter(t_peaks, A_peaks, s=22, color='tab:blue', alpha=0.85, label='|Peak amplitude|')
     ax1.plot(t_peaks, A_fit_at_peaks, 'g--', lw=2.2, label='Exponential fit (peaks)')
-    ax1.hlines(thresh, t_peaks.min(), t_peaks.max(), colors='magenta', linestyles=':', lw=2,
-               label='20% of initial peak')
     ax1.set_ylabel(r'Peak amplitude $|A|$ [rad]')
     ax1.set_title('Exponential Envelope Fit on Peaks')
     ax1.grid(True, alpha=0.25)
