@@ -3,166 +3,179 @@ import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
 from scipy.signal import find_peaks
 
-# Damped cosine function: theta(t) = theta_0 * exp(-t/tau) * cos(2*pi*t/T + phi_0)
+# ----------------------------
+# Model functions
+# ----------------------------
 def theta_func(t, theta_0, tau, T, phi_0):
+    """Damped cosine: θ(t) = θ0 exp(-t/τ) cos(2πt/T + φ0)"""
     return theta_0 * np.exp(-t / tau) * np.cos(2 * np.pi * t / T + phi_0)
 
-# Exponential decay function for envelope: A * exp(-t/tau)
 def exp_decay(t, A, tau):
+    """Exponential envelope: A exp(-t/τ)"""
     return A * np.exp(-t / tau)
 
 # ----------------------------
-# Optional: if you know your measurement noise (radians), set this to a float.
-# When provided, curve_fit will use absolute_sigma=True, yielding absolute (not scaled) covariances.
-# If unknown, leave as None to keep the default behavior.
-known_sigma = None  # e.g., 0.002
+# Load data
 # ----------------------------
-
-# Load data (angle in radians in column 1, time in column 2)
 data = np.loadtxt('QFactorGraph2.txt', skiprows=1)
-theta_data = data[:, 0]  # Angle (radians)
-t_data = data[:, 1]      # Time (seconds)
+theta_data = data[:, 0]  # angle in radians
+t_data = data[:, 1]      # time in seconds
 
-# Print data for debugging
-print('First 5 theta_data:', theta_data[:5])
-print('First 5 t_data:', t_data[:5])
+print("First 5 theta_data:", theta_data[:5])
+print("First 5 t_data:", t_data[:5])
 
-# Initial guess for damped cosine: [amplitude, tau, period, phase]
-initial_guess = [theta_data[0], 10, 1, 0]
-print('Initial guess for damped cosine:', initial_guess)
+# ----------------------------
+# Measurement uncertainties
+# ----------------------------
+# Time uncertainty = 1 frame at 30 fps
+time_sigma = 1/30
+# Angle uncertainty estimate (based on 720p video, 2.5 ft camera, pendulum length ~0.536 m)
+angle_sigma = 0.002  # ~0.1 deg ≈ 0.002 rad, rough estimate
 
-# Build kwargs for damped fit depending on whether we know sigma
-fit_kwargs = dict(p0=initial_guess, maxfev=10000)
-if known_sigma is not None:
-    sigma = np.full_like(theta_data, known_sigma, dtype=float)
-    fit_kwargs.update(sigma=sigma, absolute_sigma=True)
+# ----------------------------
+# Initial guess + fit damped cosine
+# ----------------------------
+initial_guess = [theta_data[0], 200, 1.5, 0]  # amplitude, tau, T, phi0
+fit_kwargs = dict(p0=initial_guess, maxfev=20000)
 
-try:
-    # Fit damped cosine model to data
-    params, pcov = curve_fit(theta_func, t_data, theta_data, **fit_kwargs)
-    fitted_theta_0, fitted_tau, fitted_T, fitted_phi_0 = params
-    perr = np.sqrt(np.diag(pcov))
-    print("Best fit parameters for damped cosine (1σ):")
-    print(f"  theta_0 = {fitted_theta_0:.6g} ± {perr[0]:.2g}")
-    print(f"  tau     = {fitted_tau:.6g} ± {perr[1]:.2g} s")
-    print(f"  T       = {fitted_T:.6g} ± {perr[2]:.2g} s")
-    print(f"  phi_0   = {fitted_phi_0:.6g} ± {perr[3]:.2g} rad")
-except RuntimeError as e:
-    print("Damped cosine fit did not converge:", e)
-    raise SystemExit
+params, pcov = curve_fit(theta_func, t_data, theta_data, **fit_kwargs)
+fitted_theta_0, fitted_tau, fitted_T, fitted_phi_0 = params
+perr = np.sqrt(np.diag(pcov))
+print("Best fit damped cosine (±1σ):")
+print(f"  theta0 = {fitted_theta_0:.4f} ± {perr[0]:.2g}")
+print(f"  tau    = {fitted_tau:.4f} ± {perr[1]:.2g} s")
+print(f"  T      = {fitted_T:.4f} ± {perr[2]:.2g} s")
+print(f"  phi0   = {fitted_phi_0:.4f} ± {perr[3]:.2g} rad")
 
-# ---- NEW: Propagate uncertainty to Q = π * tau / T using pcov from damped fit ----
-# Gradient of Q with respect to [theta_0, tau, T, phi_0]
-g = np.array([
-    0.0,
-    np.pi / fitted_T,
-    -np.pi * fitted_tau / (fitted_T**2),
-    0.0
-], dtype=float)
-
-Q = np.pi * fitted_tau / fitted_T
-var_Q = float(g @ pcov @ g)
-sigma_Q = np.sqrt(var_Q) if var_Q >= 0 else np.nan
-print(f"Q = {Q:.6g} ± {sigma_Q:.2g}")
-
-# Find peaks (local maxima) for envelope
-# Find peaks (indices of local maxima)
-# --- Peaks and envelope (safe) ---
-peaks, _ = find_peaks(theta_data, prominence=0.001)  # tune as needed
-
+# ----------------------------
+# Find peaks for envelope
+# ----------------------------
+peaks, _ = find_peaks(theta_data, prominence=0.001)
 have_peaks = peaks.size > 0
-A_fit = tau_fit = None
-t_peaks = theta_peaks = None
 
 if have_peaks:
-    t_peaks = t_data[peaks]          # time at peaks
-    theta_peaks = theta_data[peaks]  # angles at peaks
+    t_peaks = t_data[peaks]
+    theta_peaks = theta_data[peaks]
+    A_peaks = np.abs(theta_peaks)
 
-    exp_guess = [np.max(np.abs(theta_peaks)), 10.0]  # [A, tau]
-    exp_params, exp_pcov = curve_fit(
-        exp_decay,
-        t_peaks,
-        np.abs(theta_peaks),
-        p0=exp_guess,
-        maxfev=20000
-    )
+    # Envelope fit
+    exp_guess = [np.max(A_peaks), 200]
+    exp_params, exp_pcov = curve_fit(exp_decay, t_peaks, A_peaks,
+                                     p0=exp_guess, maxfev=20000)
     A_fit, tau_fit = exp_params
     exp_perr = np.sqrt(np.diag(exp_pcov))
-
-    print("Exponential envelope fit (1σ):")
-    print(f"  A   = {A_fit:.6g} ± {exp_perr[0]:.2g} rad")
-    print(f"  tau = {tau_fit:.6g} ± {exp_perr[1]:.2g} s")
-
-    # Plot the envelope *inside* the same block so t_peaks is defined
-    plt.plot(t_peaks, exp_decay(t_peaks, *exp_params), 'g--', label='Exponential Envelope Fit')
-    plt.scatter(t_peaks, theta_peaks, color='green', s=30, label='Envelope Peaks')
+    print("Exponential envelope fit (±1σ):")
+    print(f"  A   = {A_fit:.4f} ± {exp_perr[0]:.2g} rad")
+    print(f"  tau = {tau_fit:.4f} ± {exp_perr[1]:.2g} s")
 else:
-    print("No peaks found — skipping exponential envelope fit.")
+    print("No peaks found — skipping envelope fit.")
+    t_peaks = theta_peaks = A_peaks = []
+    tau_fit = A_fit = exp_perr = None
 
-Q2 = np.pi * tau_fit / fitted_T
-# Uncertainty for Q2 using error propagation
-sigma_tau_fit = exp_perr[1]   # from exponential envelope fit
-sigma_T = perr[2]             # from damped cosine fit
+# ----------------------------
+# Define 20% amplitude threshold
+# ----------------------------
+if have_peaks:
+    A0 = A_peaks[0]
+    thresh = 0.20 * A0
 
-sigma_Q2 = np.sqrt(
-    (np.pi / fitted_T * sigma_tau_fit)**2 +
-    ((-np.pi * tau_fit / (fitted_T**2)) * sigma_T)**2
-)
+    # Find window where amplitude crosses 20%
+    crossing = np.where(A_peaks <= thresh)[0]
+    if crossing.size > 0:
+        k_cross = crossing[0]
+        t_left = t_peaks[k_cross-1] if k_cross > 0 else t_peaks[k_cross]
+        t_right = t_peaks[k_cross]
+    else:
+        t_left, t_right = None, None
+        print("Warning: amplitude never fell below 20%.")
 
-print(f"Q2 = {Q2:.6g} ± {sigma_Q2:.2g}")
+    # Count peaks inside window
+    if t_left and t_right:
+        in_window = (t_peaks >= t_left) & (t_peaks <= t_right)
+        n_peaks_in_window = int(np.sum(in_window))
+        print(f"Peaks inside 20% window [{t_left:.2f}, {t_right:.2f}] s: {n_peaks_in_window}")
 
+# ----------------------------
+# Plot 1: Main fit with data
+# ----------------------------
+plt.figure(figsize=(12, 6))
+plt.errorbar(t_data, theta_data, xerr=time_sigma, yerr=angle_sigma,
+             fmt='o', markersize=2.2, color='tab:red', alpha=0.55,
+             ecolor='lightgray', elinewidth=0.8, capsize=0,
+             label='Measured data (±σ)', zorder=1)
 
-t_start, t_end = t_data[0], t_data[-1]
-
-amp_start = fitted_theta_0 * np.exp(-t_start / fitted_tau)
-amp_end   = fitted_theta_0 * np.exp(-t_end   / fitted_tau)
-
-print(f"Amplitude at start (t={t_start:.2f} s): {amp_start:.6g} rad")
-print(f"Amplitude at end   (t={t_end:.2f} s): {amp_end:.6g} rad")
-
-# Plot data, damped cosine fit, and exponential envelope fit
-plt.figure(figsize=(10, 6))
-plt.scatter(t_data, theta_data, color='red', s=15, label='Measured Data')
-
-t_fit = np.linspace(np.min(t_data), np.max(t_data), 1000)
-theta_fit = theta_func(t_fit, *params)
-plt.plot(t_fit, theta_fit, color='blue', label='Fitted Damped Cosine')
+t_plot = np.linspace(t_data.min(), t_data.max(), 2000)
 
 if have_peaks:
-    plt.plot(t_peaks, exp_decay(t_peaks, *exp_params), 'g--', label='Exponential Envelope Fit')
-    plt.scatter(t_peaks, theta_peaks, color='green', s=30, label='Envelope Peaks')
+    plt.plot(t_plot, exp_decay(t_plot, A_fit, tau_fit),
+             linestyle='--', linewidth=2.5, color='magenta',
+             label='Exponential envelope fit', zorder=3)
+    plt.scatter(t_peaks, theta_peaks, s=18, color='tab:green',
+                label='Envelope peaks', zorder=2)
 
-# 🔑 Always put these AFTER all plot() and scatter() calls
+plt.plot(t_plot, theta_func(t_plot, *params),
+         color='tab:blue', linewidth=2.2, label='Damped-cosine fit', zorder=4)
+
 plt.xlabel('Time (s)')
-plt.ylabel(r'Angle $\theta(t)$ [radians]')
-plt.title(r'Damped Pendulum Fit: $\theta(t) = \theta_0 e^{-t/\tau} \cos(2\pi t/T + \phi_0)$')
-
-plt.legend()
-plt.grid(True)
+plt.ylabel(r'Angle $\theta(t)$ [rad]')
+plt.title('Damped Pendulum: Data, Cosine Fit, and Envelope')
+plt.grid(True, alpha=0.25)
+plt.legend(loc='upper right', frameon=True)
 plt.tight_layout()
 plt.show()
 
-t_fit = np.linspace(np.min(t_data), np.max(t_data), 1000)
-theta_fit = theta_func(t_fit, *params)
-plt.plot(t_fit, theta_fit, color='blue', label='Fitted Damped Cosine')
+# ----------------------------
+# Plot 2: 20% threshold window
+# ----------------------------
+if have_peaks and t_left and t_right:
+    fig, ax = plt.subplots(figsize=(12, 5))
+    ax.scatter(t_peaks, A_peaks, s=22, color='tab:blue', alpha=0.85, label='|Peak amplitude|')
 
-if have_peaks:
-    # Make a new figure for the exponential envelope fit
-    plt.figure(figsize=(10, 6))
-    plt.scatter(t_peaks, theta_peaks, color='red', s=25, label='Envelope Peaks')
-    plt.plot(t_peaks, exp_decay(t_peaks, *exp_params), 'g--', lw=2, label='Exponential Envelope Fit')
+    ax.hlines(thresh, t_peaks.min(), t_peaks.max(),
+              colors='magenta', linestyles=':', linewidth=2, label='20% of initial peak')
 
-    # Add axis labels and title
-    plt.xlabel('Time (s)')
-    plt.ylabel(r'Amplitude $A(t)$ [radians]')
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
+    ax.scatter(t_peaks[in_window], A_peaks[in_window], s=30, color='orange',
+               edgecolor='k', linewidth=0.6, label='Peaks in 20% window')
 
-plt.xlabel('Time (s)')
-plt.ylabel(r'Angle $\theta(t)$ [radians]')
-plt.title('Pendulum Amplitude (Rad) Vs. Time (s) Graph')
-plt.legend()
-plt.grid(True)
-plt.tight_layout()
-plt.show()
+    ax.axvspan(t_left, t_right, color='orange', alpha=0.22, label='Crossing window')
+
+    ax.plot(t_peaks, exp_decay(t_peaks, A_fit, tau_fit), 'g--', alpha=0.8, label='Envelope at peaks')
+
+    ax.set_xlabel('Time (s)')
+    ax.set_ylabel(r'Peak amplitude $|A|$ [rad]')
+    ax.set_title('20% Amplitude Crossing Window (peaks counted in orange)')
+    ax.grid(True, alpha=0.25)
+    ax.legend(loc='upper right', frameon=True)
+    fig.tight_layout()
+    plt.show()
+
+    # ----------------------------
+    # Plot 3: Envelope fit on peaks + residuals
+    # ----------------------------
+    A_fit_at_peaks = exp_decay(t_peaks, A_fit, tau_fit)
+    env_residuals = A_peaks - A_fit_at_peaks
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 7), sharex=True,
+                                   gridspec_kw={'height_ratios': [3, 2]})
+
+    ax1.scatter(t_peaks, A_peaks, s=22, color='tab:blue', alpha=0.85, label='|Peak amplitude|')
+    ax1.plot(t_peaks, A_fit_at_peaks, 'g--', lw=2.2, label='Exponential fit (peaks)')
+    ax1.hlines(thresh, t_peaks.min(), t_peaks.max(), colors='magenta', linestyles=':', lw=2,
+               label='20% of initial peak')
+    ax1.set_ylabel(r'Peak amplitude $|A|$ [rad]')
+    ax1.set_title('Exponential Envelope Fit on Peaks')
+    ax1.grid(True, alpha=0.25)
+    ax1.legend(loc='upper right', frameon=True)
+
+    ax2.axhline(0, color='k', lw=1)
+    ax2.errorbar(t_peaks, env_residuals, yerr=angle_sigma,
+                 fmt='o', ms=3, ecolor='lightgray', elinewidth=1,
+                 capsize=0, color='black', label='Residuals')
+    ax2.set_xlabel('Time (s)')
+    ax2.set_ylabel('Residual (rad)')
+    ax2.set_title('Residuals: peaks − exponential fit')
+    ax2.grid(True, axis='y', linestyle=':')
+    ax2.legend(loc='upper right', frameon=True)
+
+    fig.tight_layout()
+    plt.show()
