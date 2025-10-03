@@ -1,5 +1,6 @@
 # Sample Python code to run the fit_black_box Python code relatively easily
 
+from doctest import DocTestFailure
 import fit_black_box as bb
 
 # First, define the function you want to fit. Here it's a linear function.
@@ -51,4 +52,3 @@ bb.plot_fit(quadratic, x, y, xerr, yerr, init_guess=init_guess, font_size=font_s
 # Fit the same data with an exponential function
 
 bb.plot_fit(expon, x, y, xerr, yerr)
-
