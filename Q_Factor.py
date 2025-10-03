@@ -29,7 +29,7 @@ print("First 5 t_data:", t_data[:5])
 # Measurement uncertainties
 # ----------------------------
 time_sigma  = 1.0 / 30.0   # one timestamp uncertainty: 1 frame at 30 fps
-angle_sigma = 0.002        # ~0.1° ≈ 0.002 rad
+angle_sigma = 0.005        # 0.005 rad
 
 # ----------------------------
 # Damped cosine fit (for overlay/residuals only)
@@ -104,12 +104,17 @@ else:
 # Mean period from total elapsed time and its uncertainty
 # ----------------------------
 N_periods = t_peaks.size - 1
-t_total   = t_peaks[-1] - t_peaks[0]
+t_start   = t_peaks[0]
+t_end     = t_peaks[-1]        # last peak = end of last full oscillation
+t_total   = t_end - t_start
 T_bar     = t_total / N_periods
 
 # σ(T̄) from two timestamps: σ_t_total = sqrt(2) σ_t ; divide by N_periods
 sigma_T_bar = (np.sqrt(2.0) * time_sigma) / N_periods
 
+print(f"\nPendulum run start time = {t_start:.3f} s")
+print(f"Pendulum run end time   = {t_end:.3f} s (last full oscillation peak)")
+print(f"Total elapsed time      = {t_total:.3f} s")
 print(f"\nMean period T̄ = {T_bar:.6g} ± {sigma_T_bar:.2g} s  (from N={N_periods} periods)")
 
 # ----------------------------
@@ -126,7 +131,7 @@ print(f"Q2 = {Q2:.6g} ± {sigma_Q2:.2g}")
 # Plot 1: Main time series + cosine fit (NO orange markers here)
 # ----------------------------
 plt.figure(figsize=(12, 6))
-# (Keep graph markers the same as before)
+# Keep graph markers the same as before
 plt.errorbar(
     t_data, theta_data,
     xerr=time_sigma, yerr=angle_sigma,
@@ -226,7 +231,7 @@ ax2.set_ylabel('Residual [rad]', fontsize=36)
 ax2.set_title('Residuals of Exponential Fit', fontsize=38)
 ax2.tick_params(axis='both', which='major', labelsize=28)
 ax2.grid(True, axis='y', linestyle=':')
-ax2.legend(loc='lower right', frameon=True, fontsize=24)
+ax2.legend(loc='upper right', frameon=True, fontsize=24)
 
 fig.tight_layout()
 plt.show()
