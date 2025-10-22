@@ -28,8 +28,8 @@ def load_data(filename):
 
 
 def plot_fit(my_func, xdata, ydata, xerror=None, yerror=None, init_guess=None, font_size=14,
-             xlabel="Angle (Radians)", ylabel="Period (Seconds)", 
-             title="Period Vs. Angle Graph"):    
+             xlabel="Length (m)", ylabel="Q-Factor", 
+             title="Q-Factor Vs. Length Graph"):    
     plt.rcParams.update({'font.size': font_size})
     plt.rcParams['figure.figsize'] = 10, 9
     # Change the fontsize of the graphs to make it easier to read.
@@ -75,8 +75,8 @@ def plot_fit(my_func, xdata, ydata, xerror=None, yerror=None, init_guess=None, f
     ax1.set_title(title)
     # label the axes and set a title
 
-    #ax1.set_xscale('log')
-    #ax1.set_yscale('log')
+    # ax1.set_xscale('log')
+    # ax1.set_yscale('log')
     # uncomment out the above two lines if you want to make it log-log scale
     
     residual = ydata - my_func(xdata, *popt)
