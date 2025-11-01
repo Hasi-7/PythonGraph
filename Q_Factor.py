@@ -16,15 +16,29 @@ def exp_decay(t, A, tau):
     return A * np.exp(-t / tau)
 
 # ----------------------------
-# Load data (angle [rad], time [s])
+# Load data (auto-detect which col is time)
 # ----------------------------
-data = np.loadtxt('QFactorGraph3(70cm).txt', skiprows=1)
-theta_data = data[:, 0].astype(float)
-t_data     = data[:, 1].astype(float)
+raw = np.loadtxt('QFactorGraph4(New Pendulum).txt', skiprows=1)
 
-# Clean / sort just in case
+col0_inc = np.all(np.diff(raw[:, 0]) >= -1e-12)
+col1_inc = np.all(np.diff(raw[:, 1]) >= -1e-12)
+
+if col0_inc and not col1_inc:
+    t_data     = raw[:, 0].astype(float)
+    theta_data = raw[:, 1].astype(float)
+elif col1_inc and not col0_inc:
+    t_data     = raw[:, 1].astype(float)
+    theta_data = raw[:, 0].astype(float)
+else:
+    # fallback (assume first col is time)
+    t_data     = raw[:, 0].astype(float)
+    theta_data = raw[:, 1].astype(float)
+
+# Remove any duplicate/NaN rows and sort by time
 m = np.isfinite(theta_data) & np.isfinite(t_data)
 t_data, theta_data = t_data[m], theta_data[m]
+mask_unique = np.r_[True, np.diff(t_data) > 0]
+t_data, theta_data = t_data[mask_unique], theta_data[mask_unique]
 order = np.argsort(t_data)
 t_data, theta_data = t_data[order], theta_data[order]
 
@@ -40,12 +54,10 @@ y = theta_data
 # Measurement uncertainties
 # ----------------------------
 time_sigma  = 1.0 / 30.0   # one timestamp uncertainty: 1 frame at 30 fps
-angle_sigma = 0.005        # ~0.29°
+angle_sigma = 0.005        # rad
 
 # ----------------------------
-# Robust peak detection
-#   1) Try positive maxima (one per period)
-#   2) If too few, use minima (troughs) instead
+# Robust peak detection (pos → neg → abs)
 # ----------------------------
 pk_pos, _ = find_peaks(y, prominence=1e-3)
 if pk_pos.size >= 3:
@@ -55,7 +67,6 @@ else:
     if pk_min.size >= 3:
         peaks = pk_min
     else:
-        # fall back: relax threshold and try absolute
         pk_abs, _ = find_peaks(np.abs(y), prominence=5e-4)
         peaks = pk_abs
 
@@ -63,57 +74,48 @@ have_peaks = peaks.size >= 3
 if not have_peaks:
     print("Warning: still found <3 peaks; results may be limited.")
 
-# Build peak arrays (empty-safe)
 t_peaks     = t[peaks] if have_peaks else np.array([])
 theta_peaks = y[peaks] if have_peaks else np.array([])
 A_peaks     = np.abs(theta_peaks) if have_peaks else np.array([])
 
 # ----------------------------
-# Data-driven initial guesses for damped cosine
+# Safe initial guesses for the damped cosine
 # ----------------------------
-def guess_params_from_peaks(t_, y_):
-    # default fallbacks
-    A_guess = max(np.max(np.abs(y_[:200])), 1e-3)
-    T_guess = 1.5
-    tau_guess = 200.0
+def safe_initial_guess(t_full, y_full, t_pk, y_pk):
+    # defaults
+    A_guess   = max(np.max(np.abs(y_full[:200])) if y_full.size else 1.0, 1e-3)
+    T_guess   = 1.5
+    tau_guess = max((t_full[-1] - t_full[0]) * 3.0, 1.0)
 
-    if t_.size >= 3:
-        # Period guess: median spacing between same-kind peaks
-        T_guess = float(np.median(np.diff(t_)))
-        # Tau guess: linear fit on ln of envelope
-        with np.errstate(divide='ignore', invalid='ignore'):
-            z = np.log(np.abs(y_) + 1e-12)
-        # robust line fit via polyfit on peaks
-        m, b = np.polyfit(t_, z, 1)
-        tau_guess = max(5.0, -1.0/m) if m < 0 else 200.0
-        A_guess = float(np.max(np.abs(y_)))  # first/overall peak
+    # Try period from peak spacing
+    if t_pk.size >= 3:
+        dtp = np.diff(t_pk)
+        dtp = dtp[dtp > 0]
+        if dtp.size:
+            T_guess = float(np.median(dtp))
 
-    # Phase guess from first sample
-    w = 2.0 * np.pi / T_guess
-    # approximate e^{-t/τ} ~ 1 at t=0
-    c = np.clip(y[0] / max(A_guess, 1e-9), -1.0, 1.0)
+    # Final clamp so it's never zero/negative
+    T_guess = max(T_guess, 1e-3)
+
+    # Phase guess: use first sample sign & slope
+    c = np.clip(y_full[0] / A_guess, -1.0, 1.0)
     phi_guess = float(np.arccos(c))
-    # pick sign using slope
-    dy0 = np.gradient(y, t, edge_order=2)[0]
+    dy0 = np.gradient(y_full, t_full, edge_order=2)[0]
     if dy0 > 0:
         phi_guess = -phi_guess
 
-    return A_guess, tau_guess, T_guess, phi_guess
+    return [A_guess, tau_guess, T_guess, phi_guess]
 
-A_guess, tau_guess, T_guess, phi_guess = (
-    guess_params_from_peaks(t_peaks, theta_peaks) if have_peaks
-    else guess_params_from_peaks(t[:300], y[:300])
-)
-
-initial_guess = [A_guess, tau_guess, T_guess, phi_guess]
+theta0_g, tau_g, T_g, phi_g = safe_initial_guess(t, y, t_peaks, theta_peaks)
+initial_guess = [theta0_g, tau_g, T_g, phi_g]
 print("Initial guesses:", initial_guess)
 
-# Reasonable bounds to keep optimizer in range
-lower = [0.0,            0.1*tau_guess,  0.5*T_guess, -2*np.pi]
-upper = [2.0*A_guess,   10.0*tau_guess,  1.5*T_guess,  2*np.pi]
+# Bounds built from clamped guesses
+lower = [0.0,            0.1 * tau_g,  0.5 * T_g, -2*np.pi]
+upper = [2.0 * abs(theta0_g) + 1e-6, 10.0 * tau_g, 1.5 * T_g,  2*np.pi]
 
 # ----------------------------
-# Damped cosine fit (with bounds & robust fallback)
+# Damped cosine fit (with bounds & fallback)
 # ----------------------------
 try:
     params, pcov = curve_fit(
@@ -137,16 +139,16 @@ print(f"  T      = {fitted_T:.6g} ± {perr[2] if np.isfinite(perr[2]) else np.na
 print(f"  phi0   = {fitted_phi_0:.6g} ± {perr[3] if np.isfinite(perr[3]) else np.nan:.2g} rad")
 
 # ----------------------------
-# Envelope fit on maxima (use |theta| at the detected same-kind extrema)
+# Envelope fit on maxima (|theta| at same-kind extrema)
 # ----------------------------
 if have_peaks:
-    # Initial guess for envelope from above tau guess / A guess
-    exp_guess  = [np.max(A_peaks), max(1.0, tau_guess)]
+    exp_guess  = [np.max(A_peaks), max(1.0, tau_g)]
     try:
         exp_params, exp_pcov = curve_fit(
             exp_decay, t_peaks, A_peaks,
-            p0=exp_guess, bounds=([0.5*exp_guess[0], 0.1*exp_guess[1]],
-                                  [2.0*exp_guess[0], 10.0*exp_guess[1]]),
+            p0=exp_guess,
+            bounds=([0.5*exp_guess[0], 0.1*exp_guess[1]],
+                    [2.0*exp_guess[0], 10.0*exp_guess[1]]),
             maxfev=100000
         )
         A_fit, tau_fit = exp_params
@@ -167,30 +169,29 @@ if have_peaks:
     print(f"  tau = {tau_fit:.6g} ± {sigma_tau if np.isfinite(sigma_tau) else np.nan:.2g} s")
 
 # ----------------------------
-# 20% points (STRICT ±1% band), maxima only
+# 20% points (STRICT ±1%), maxima only
 # ----------------------------
 if have_peaks:
     A0     = A_peaks[0]
     target = 0.20 * A0
-    tol    = 0.01 * target        # ±1% of the 20% target
+    tol    = 0.01 * target
     near20_mask = (A_peaks >= target - tol) & (A_peaks <= target + tol)
 
     idx20 = np.where(near20_mask)[0]
     if idx20.size > 0:
         first_20_idx   = int(idx20[0])
-        N_count        = first_20_idx + 1      # oscillations to FIRST ~20% peak
-        sigma_N_count  = 1                     # ±1 oscillation ambiguity
+        N_count        = first_20_idx + 1
+        sigma_N_count  = 1
         Q_count        = 2 * N_count
-        sigma_Q_count  = 2                     # ±2 from ±1 oscillation
+        sigma_Q_count  = 2
     else:
         first_20_idx = None
         N_count = sigma_N_count = Q_count = sigma_Q_count = None
 
-    # Arrays for orange markers (maxima plot only)
     t_20 = t_peaks[near20_mask]
     A_20 = A_peaks[near20_mask]
 
-    print(f"\n20% target amplitude = {target:.6f} rad, allowed band = [{target - tol:.6f}, {target + tol:.6f}] rad")
+    print(f"\n20% target amplitude = {target:.6f} rad, band = [{target - tol:.6f}, {target + tol:.6f}] rad")
     print(f"Number of maxima within ±1% of target: {t_20.size}")
     if first_20_idx is not None:
         print(f"N_count (to first 20%) = {N_count} ± {sigma_N_count}")
@@ -207,7 +208,7 @@ else:
 if have_peaks and t_peaks.size >= 2:
     N_periods = t_peaks.size - 1
     t_start   = t_peaks[0]
-    t_end     = t_peaks[-1]        # last peak = end of last full oscillation
+    t_end     = t_peaks[-1]
     t_total   = t_end - t_start
     T_bar     = t_total / N_periods
     sigma_T_bar = (np.sqrt(2.0) * time_sigma) / N_periods
@@ -261,12 +262,8 @@ if have_peaks:
         label='Pendulum peaks', zorder=2
     )
 
-# Damped cosine fit curve
 theta_fit = theta_func(t_plot, *params)
-plt.plot(
-    t_plot, theta_fit,
-    color='tab:blue', linewidth=2.2, label='Damped-cosine fit', zorder=4
-)
+plt.plot(t_plot, theta_fit, color='tab:blue', linewidth=2.2, label='Damped-cosine fit', zorder=4)
 
 plt.xlabel('Time (s)', fontsize=36)
 plt.ylabel(r'Angle $\theta(t)$ [rad]', fontsize=36)
@@ -274,7 +271,6 @@ plt.title('Amplitude Vs. Time - Cosine and Exponential Fits', fontsize=38)
 plt.tick_params(axis='both', which='major', labelsize=28)
 plt.grid(True, alpha=0.25)
 
-# Legend with bigger markers ONLY
 legend_handles = [
     Line2D([0], [0], linestyle='--', color='magenta', lw=2.8, label='Exponential fit'),
     Line2D([0], [0], linestyle='-',  color='tab:blue', lw=2.8, label='Damped-cosine fit'),
@@ -292,26 +288,18 @@ if have_peaks:
     A_fit_at_peaks = exp_decay(t_peaks, A_fit, tau_fit) if np.isfinite(A_fit) else np.zeros_like(t_peaks)
     env_residuals  = A_peaks - A_fit_at_peaks
 
-    fig, (ax1, ax2) = plt.subplots(
-        2, 1, figsize=(12, 7), sharex=True,
-        gridspec_kw={'height_ratios': [3, 2]}
-    )
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 7), sharex=True,
+                                   gridspec_kw={'height_ratios': [3, 2]})
 
-    ax1.errorbar(
-        t_peaks, A_peaks,
-        xerr=time_sigma, yerr=angle_sigma,
-        fmt='o', ms=4, color='tab:blue', ecolor='lightgray',
-        alpha=0.85, label='Maxima (±σ)', zorder=2
-    )
+    ax1.errorbar(t_peaks, A_peaks, xerr=time_sigma, yerr=angle_sigma,
+                 fmt='o', ms=4, color='tab:blue', ecolor='lightgray',
+                 alpha=0.85, label='Maxima (±σ)', zorder=2)
     if np.isfinite(A_fit):
         ax1.plot(t_peaks, A_fit_at_peaks, 'g--', lw=2.2, label='Exponential fit', zorder=3)
 
     if t_20.size > 0:
-        ax1.scatter(
-            t_20, A_20,
-            s=90, facecolor='orange', edgecolor='black', linewidth=1.1,
-            label='20% amplitude peaks (±1%)', zorder=5
-        )
+        ax1.scatter(t_20, A_20, s=90, facecolor='orange', edgecolor='black', linewidth=1.1,
+                    label='20% amplitude peaks (±1%)', zorder=5)
 
     ax1.set_ylabel('Peak amplitude [rad]', fontsize=36)
     ax1.set_title('Exponential Fit on Maxima (20% amplitude peaks highlighted)', fontsize=38)
@@ -326,12 +314,9 @@ if have_peaks:
     ax1.legend(handles=legend_handles2, loc='upper right', frameon=True, fontsize=24)
 
     ax2.axhline(0, color='k', lw=1)
-    ax2.errorbar(
-        t_peaks, env_residuals,
-        xerr=time_sigma, yerr=angle_sigma,
-        fmt='o', ms=3, ecolor='lightgray', elinewidth=1,
-        capsize=0, color='black', label='Residuals (data - fit)'
-    )
+    ax2.errorbar(t_peaks, env_residuals, xerr=time_sigma, yerr=angle_sigma,
+                 fmt='o', ms=3, ecolor='lightgray', elinewidth=1,
+                 capsize=0, color='black', label='Residuals (data - fit)')
     ax2.set_xlabel('Time (s)', fontsize=36)
     ax2.set_ylabel('Residual [rad]', fontsize=36)
     ax2.set_title('Residuals of Exponential Fit', fontsize=38)

@@ -28,8 +28,8 @@ def load_data(filename):
 
 
 def plot_fit(my_func, xdata, ydata, xerror=None, yerror=None, init_guess=None, font_size=14,
-             xlabel="Length (m)", ylabel="Q-Factor", 
-             title="Q-Factor Vs. Length Graph"):    
+             xlabel="Angle (Radians)", ylabel="Period (Seconds)", 
+             title="Period vs. Angle"):    
     plt.rcParams.update({'font.size': font_size})
     plt.rcParams['figure.figsize'] = 10, 9
     # Change the fontsize of the graphs to make it easier to read.

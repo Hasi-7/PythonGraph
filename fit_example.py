@@ -36,24 +36,24 @@ def cubic(t, a, b, c, d):
 # Now load the data from the file. The file should be in the same directory as this Python code.
 # Some chance you will need an absolute path: "C:\\Users\\Brian\\Python\\mydata_fake.txt"
 
-filename="length_Q_graph.txt"
+filename="mydata_fake.txt"
 x, y, xerr, yerr = bb.load_data(filename)
 
 # This time, let's use every single possible option available to bb.plot_fit()
 
 init_guess = (-0.5, 0, +0.5) # guess for the best fit parameters
 font_size = 20
-xlabel = "Length (cm)"
+xlabel = "Angle (Radians)"
 ylabel = "Period (s)"
 
 # Now we make the plot, displayed on screen and saved in the directory, and print the best fit values
-# bb.plot_fit(quadratic, x, y, xerr, yerr, init_guess=init_guess, font_size=font_size,
-#             xlabel=xlabel, ylabel=ylabel)
+bb.plot_fit(quadratic, x, y, xerr, yerr, init_guess=init_guess, font_size=font_size,
+            xlabel=xlabel, ylabel=ylabel)
 
 # Note: for sinusoidal functions, guessing the period correctly with init_guess is critical
 
 # Fit the same data with an exponential function
 
 # bb.plot_fit(expon, x, y, xerr, yerr)
-bb.plot_fit(cubic, x, y, xerr, yerr, init_guess=(1,1,1,1), font_size=font_size,
-            xlabel=xlabel, ylabel=ylabel)
+# bb.plot_fit(cubic, x, y, xerr, yerr, init_guess=(1,1,1,1), font_size=font_size,
+#             xlabel=xlabel, ylabel=ylabel)
