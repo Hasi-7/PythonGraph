@@ -181,54 +181,66 @@ if have_peaks:
     print(f"  tau = {tau_fit:.6g} ± {sigma_tau if np.isfinite(sigma_tau) else np.nan:.2g} s")
 
 # ----------------------------
-# 4% points using error bars (bracket N and compute σN)
+# 4% points using error bars (bracket N and compute σN) + ±1% band around 4%
 # ----------------------------
 if have_peaks:
     A0     = A_peaks[0]
     target = 0.04 * A0                         # 4% of initial amplitude
+
+    # Peak-wise y-uncertainty (same as plotted)
     sigma_A = angle_sigma * np.ones_like(A_peaks)
 
+    # Error-bar envelopes
     A_upper = A_peaks + sigma_A
     A_lower = A_peaks - sigma_A
 
-    # First DEFINITE crossing (even upper bar below target)
+    # ---- Bracket N using the target value (for Q_count) ----
+    # First DEFINITE crossing: even the upper bar is below target
     idx_lo = np.where(A_upper <= target)[0]
     N_lo = idx_lo[0] + 1 if idx_lo.size else None
 
-    # First POSSIBLE crossing (lower bar touches target)
+    # First POSSIBLE crossing: lower bar touches/drops below target
     idx_hi = np.where(A_lower <= target)[0]
     N_hi = idx_hi[0] + 1 if idx_hi.size else None
 
-    # Peaks whose error bars overlap the target (for highlighting)
-    overlap = (A_lower <= target) & (A_upper >= target)
-    t_4 = t_peaks[overlap]
-    A_4 = A_peaks[overlap]
+    # ---- Mark peaks "within ±1% of the 4% target" OR whose error bars overlap that band ----
+    band_lo = 0.99 * target
+    band_hi = 1.01 * target
+    in_band_nominal = (A_peaks >= band_lo) & (A_peaks <= band_hi)
+    overlaps_band   = (A_lower <= band_hi) & (A_upper >= band_lo)
+    highlight_mask  = in_band_nominal | overlaps_band
+
+    t_4 = t_peaks[highlight_mask]
+    A_4 = A_peaks[highlight_mask]
 
     if (N_lo is not None) and (N_hi is not None):
+        # Best estimate and uncertainty from bracket
         N_est  = 0.5 * (N_lo + N_hi)
         sigma_N = 0.5 * abs(N_hi - N_lo)
-        Q_count       = 2.0 * N_est
-        sigma_Q_count = 2.0 * sigma_N
+
+        # Q_count is the oscillation count to reach 4% (NO x2 factor)
+        Q_count       = N_est
+        sigma_Q_count = sigma_N
 
         print(f"\n4% target amplitude = {target:.6f} rad")
         print(f"First definite crossing (A_upper <= target): N_lo = {N_lo}")
         print(f"First possible crossing (A_lower <= target): N_hi = {N_hi}")
         print(f"N_count (to 4%) = {N_est:.2f} ± {sigma_N:.2f}")
-        print(f"Q_count = 2·N = {Q_count:.2f} ± {sigma_Q_count:.2f}")
-        print(f"Peaks with error-bars overlapping 4% target: {t_4.size}")
+        print(f"Q_count (oscillations to 4%) = {Q_count:.2f} ± {sigma_Q_count:.2f}")
+        print(f"Peaks within ±1% band OR overlapping it via error bars: {t_4.size}")
     else:
-        # Fallback: nearest peak if we cannot bracket with error bars
+        # Fallback: nearest-peak estimate if we can’t bracket with error bars
         if A_peaks.size:
             k = int(np.argmin(np.abs(A_peaks - target)))
             N_est = k + 1
             sigma_N = 1.0
-            Q_count = 2.0 * N_est
-            sigma_Q_count = 2.0 * sigma_N
+            Q_count       = N_est
+            sigma_Q_count = sigma_N
             t_4 = t_peaks[[k]]
             A_4 = A_peaks[[k]]
             print("\nCould not bracket 4% with error bars; using nearest peak.")
             print(f"N_count (to 4%) ≈ {N_est} ± {sigma_N}")
-            print(f"Q_count = 2·N ≈ {Q_count:.2f} ± {sigma_Q_count:.2f}")
+            print(f"Q_count (oscillations to 4%) ≈ {Q_count:.2f} ± {sigma_Q_count:.2f}")
         else:
             t_4 = A_4 = np.array([])
             Q_count = sigma_Q_count = np.nan
@@ -339,10 +351,10 @@ if have_peaks:
     if np.isfinite(A_fit):
         ax1.plot(t_peaks, A_fit_at_peaks, 'g--', lw=2.2, label='Exponential fit', zorder=3)
 
-    # Highlight peaks whose error bars overlap the 4% target
+    # Highlight peaks whose error bars overlap the ±1% band around the 4% target
     if t_4.size > 0:
         ax1.scatter(t_4, A_4, s=90, facecolor='orange', edgecolor='black', linewidth=1.1,
-                    label='4% amplitude peaks (±σ overlap)', zorder=5)
+                    label='4% amplitude peaks (±1% band + σ overlap)', zorder=5)
 
     ax1.set_ylabel('Peak amplitude [rad]', fontsize=36)
     ax1.set_title('Exponential Fit on Maxima (4% amplitude peaks highlighted)', fontsize=38)
