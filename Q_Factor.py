@@ -18,7 +18,7 @@ def exp_decay(t, A, tau):
 # ----------------------------
 # Load data (auto-detect which column is time)
 # ----------------------------
-fname = 'QFactorGraph5(67cm).txt'   # <- change if needed
+fname = 'QFactorGraph3(70cm).txt'   # <- change if needed
 raw = np.loadtxt(fname, skiprows=1)
 
 col0_inc = np.all(np.diff(raw[:, 0]) >= -1e-12)
