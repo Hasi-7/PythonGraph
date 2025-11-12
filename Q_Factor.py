@@ -18,7 +18,7 @@ def exp_decay(t, A, tau):
 # ----------------------------
 # Load data (auto-detect which column is time)
 # ----------------------------
-fname = 'QFactorGraph3(70cm).txt'   # <- change if needed
+fname = 'QFactorGraph4(New Pendulum).txt'   # <- change if needed
 raw = np.loadtxt(fname, skiprows=1)
 
 col0_inc = np.all(np.diff(raw[:, 0]) >= -1e-12)
@@ -170,28 +170,68 @@ if have_peaks and len(A_peaks) > 0:
 # ============================================================
 
 # Initial guesses for the damped cosine on the baseline-relative series
-def safe_initial_guess(t_full, y_full, t_pk):
-    A_guess   = max(np.max(np.abs(y_full[:min(200, len(y_full))])) if y_full.size else 1.0, 1e-3)
+def safe_initial_guess(t_full, y_full, t_pk, A_pk):
+    # Use the amplitude of detected peaks for better initial guess
+    if A_pk.size >= 3:
+        # Use the first few peaks to estimate initial amplitude
+        A_guess = float(np.max(A_pk[:min(5, len(A_pk))]))
+    else:
+        A_guess = max(np.max(np.abs(y_full[:min(200, len(y_full))])) if y_full.size else 1.0, 1e-3)
+    
+    # Period from peak spacing
     if t_pk.size >= 3:
         dtp = np.diff(t_pk)
         dtp = dtp[dtp > 0]
         T_guess = float(np.median(dtp)) if dtp.size else T_est
     else:
         T_guess = T_est
-    T_guess   = max(T_guess, 1e-3)
-    tau_guess = max((t_full[-1] - t_full[0]) * 3.0, 1.0)
-    # phase guess from first sample sign & slope
-    c = np.clip(y_full[0] / A_guess, -1.0, 1.0)
-    phi_guess = float(np.arccos(c))
-    dy0 = np.gradient(y_full, t_full, edge_order=2)[0]
-    if dy0 > 0:  # choose descending from a maximum
-        phi_guess = -phi_guess
+    T_guess = max(T_guess, 1e-3)
+    
+    # Tau from exponential decay of peaks (if we have enough)
+    if A_pk.size >= 5:
+        # Use linear fit in log space for initial tau guess
+        with np.errstate(divide='ignore', invalid='ignore'):
+            log_A_pk = np.log(np.clip(A_pk[:min(20, len(A_pk))], 1e-12, None))
+        valid = np.isfinite(log_A_pk)
+        if np.sum(valid) >= 3:
+            t_pk_valid = t_pk[:len(log_A_pk)][valid]
+            log_A_valid = log_A_pk[valid]
+            slope, _ = np.polyfit(t_pk_valid, log_A_valid, 1)
+            if slope < 0:
+                tau_guess = -1.0 / slope
+            else:
+                tau_guess = max((t_full[-1] - t_full[0]) * 2.0, 10.0)
+        else:
+            tau_guess = max((t_full[-1] - t_full[0]) * 2.0, 10.0)
+    else:
+        tau_guess = max((t_full[-1] - t_full[0]) * 2.0, 10.0)
+    
+    tau_guess = max(tau_guess, 1.0)
+    
+    # Phase guess from first peak location
+    if t_pk.size >= 1:
+        # Find closest data point to first peak
+        idx_first_pk = np.argmin(np.abs(t_full - t_pk[0]))
+        # Phase at first peak (where cosine should be ±1)
+        phi_guess = -2 * np.pi * t_pk[0] / T_guess
+        # Normalize to [-π, π]
+        phi_guess = np.arctan2(np.sin(phi_guess), np.cos(phi_guess))
+    else:
+        # phase guess from first sample sign & slope
+        c = np.clip(y_full[0] / A_guess, -1.0, 1.0)
+        phi_guess = float(np.arccos(c))
+        dy0 = np.gradient(y_full, t_full, edge_order=2)[0]
+        if dy0 > 0:  # choose descending from a maximum
+            phi_guess = -phi_guess
+    
     return [A_guess, tau_guess, T_guess, phi_guess]
 
-theta0_g, tau_g, T_g, phi_g = safe_initial_guess(t, y_rel, t_peaks)
+theta0_g, tau_g, T_g, phi_g = safe_initial_guess(t, y_rel, t_peaks, A_peaks)
 initial_guess = [theta0_g, tau_g, T_g, phi_g]
+print(f"\nInitial guess for damped cosine: θ₀={theta0_g:.6f}, τ={tau_g:.2f}, T={T_g:.6f}, φ₀={phi_g:.6f}")
+
 lower = [0.0,            0.1 * tau_g,  0.5 * T_g, -2*np.pi]
-upper = [2.0 * abs(theta0_g) + 1e-6, 10.0 * tau_g, 1.5 * T_g,  2*np.pi]
+upper = [5.0 * abs(theta0_g), 10.0 * tau_g, 1.5 * T_g,  2*np.pi]
 
 try:
     params, pcov = curve_fit(
@@ -292,62 +332,181 @@ if have_peaks:
     print(f"  tau = {tau_fit:.6g} ± {sigma_tau if np.isfinite(sigma_tau) else np.nan:.2g} s")
 
 # ============================================================
-#                 4% TARGET COUNT (with σ)
+#    Q-FACTOR BY COUNTING METHOD (20% threshold, then ×2)
 #     using baseline-relative amplitudes at peaks
 # ============================================================
 if have_peaks:
     A0 = A_peaks[0]
-    target = 0.04 * A0
-
-    sigma_A = angle_sigma * np.ones_like(A_peaks)
-    A_upper = A_peaks + sigma_A
-    A_lower = A_peaks - sigma_A
-
-    # bracket where the 4% target is reached
-    idx_lo = np.where(A_upper <= target)[0]  # definitely below
-    idx_hi = np.where(A_lower <= target)[0]  # possibly below
-
-    N_lo = idx_lo[0] + 1 if idx_lo.size else None
-    N_hi = idx_hi[0] + 1 if idx_hi.size else None
-
-    band_lo = 0.99 * target
-    band_hi = 1.01 * target
-    in_band = (A_peaks >= band_lo) & (A_peaks <= band_hi)
-    overlaps = (A_lower <= band_hi) & (A_upper >= band_lo)
-    highlight_mask = in_band | overlaps
-    t_4 = t_peaks[highlight_mask]
-    A_4 = A_peaks[highlight_mask]
-
-    if (N_lo is not None) and (N_hi is not None):
-        N_est  = 0.5 * (N_lo + N_hi)
-        sigma_N = 0.5 * abs(N_hi - N_lo)
-        Q_count = N_est          # NOTE: at 4%, Q_count = N (no ×2)
-        sigma_Q_count = sigma_N
-        print(f"\n4% target amplitude = {target:.6f} rad (relative to baseline)")
-        print(f"First definite crossing (A_upper <= target): N_lo = {N_lo}")
-        print(f"First possible crossing (A_lower <= target): N_hi = {N_hi}")
-        print(f"N_count (to 4%) = {N_est:.2f} ± {sigma_N:.2f}")
-        print(f"Q_count (oscillations to 4%) = {Q_count:.2f} ± {sigma_Q_count:.2f}")
+    target_20_percent = 0.20 * A0
+    target_4_percent = 0.04 * A0
+    
+    print(f"\n=== Q-Factor by Counting Method ===")
+    print(f"Initial amplitude A₀ = {A0:.6f} rad")
+    print(f"Final measured peak: A_{len(A_peaks)} = {A_peaks[-1]:.6f} rad ({100*A_peaks[-1]/A0:.2f}% of A₀)")
+    print(f"\n20% target amplitude = {target_20_percent:.6f} rad")
+    print(f"Data collection stopped at {100*A_peaks[-1]/A0:.2f}% - {'BEFORE' if A_peaks[-1] > target_20_percent else 'AFTER'} reaching 20%")
+    
+    # METHOD 1: Direct counting from measured peaks (IMPROVED with interpolation)
+    # Find where amplitude crosses the 20% threshold
+    
+    # Find the bracket: last peak above target and first peak below target
+    target = target_20_percent  # Use 20% threshold
+    above_target = A_peaks >= target
+    below_target = A_peaks < target
+    
+    if np.any(above_target) and np.any(below_target):
+        # Find the crossing point
+        idx_last_above = np.where(above_target)[0][-1]
+        idx_first_below = np.where(below_target)[0][0]
+        
+        # Check if they're adjacent
+        if idx_first_below == idx_last_above + 1:
+            # Good bracket - interpolate to find exact crossing
+            A1, A2 = A_peaks[idx_last_above], A_peaks[idx_first_below]
+            t1, t2 = t_peaks[idx_last_above], t_peaks[idx_first_below]
+            
+            # Linear interpolation to find where A = target
+            # A(t) = A1 + (A2-A1)/(t2-t1) * (t-t1)
+            # Solve for t when A = target
+            if A2 != A1:
+                t_crossing = t1 + (target - A1) * (t2 - t1) / (A2 - A1)
+                
+                # Count peaks up to interpolated crossing point
+                N_count_interp = idx_last_above + 1 + (t_crossing - t1) / (t2 - t1)
+                
+                # Estimate uncertainty from measurement uncertainty
+                # Uncertainty in amplitude affects where we detect the crossing
+                sigma_A = angle_sigma
+                
+                # How much does ±σ_A shift the crossing point?
+                # For upper bound (A_peaks + σ_A), crossing is earlier
+                A1_upper = A1 + sigma_A
+                A2_upper = A2 + sigma_A
+                if A2_upper <= target <= A1_upper:
+                    t_cross_upper = t1 + (target - A1_upper) * (t2 - t1) / (A2_upper - A1_upper)
+                    N_upper = idx_last_above + 1 + (t_cross_upper - t1) / (t2 - t1)
+                else:
+                    # May need to look at adjacent peaks
+                    N_upper = N_count_interp - 0.5
+                
+                # For lower bound (A_peaks - σ_A), crossing is later
+                A1_lower = A1 - sigma_A
+                A2_lower = A2 - sigma_A
+                if A2_lower <= target <= A1_lower:
+                    t_cross_lower = t1 + (target - A1_lower) * (t2 - t1) / (A2_lower - A1_lower)
+                    N_lower = idx_last_above + 1 + (t_cross_lower - t1) / (t2 - t1)
+                else:
+                    # May need to look at adjacent peaks
+                    N_lower = N_count_interp + 0.5
+                
+                sigma_N_direct = max(abs(N_upper - N_count_interp), abs(N_lower - N_count_interp))
+                N_count_direct = N_count_interp
+                
+                print(f"Method 1 (Direct counting with interpolation to 20%):")
+                print(f"  Crossing between peak #{idx_last_above+1} (A={A1:.6f}) and peak #{idx_first_below+1} (A={A2:.6f})")
+                print(f"  Interpolated crossing at t={t_crossing:.3f} s")
+                print(f"  N_count (to 20%) = {N_count_direct:.2f} ± {sigma_N_direct:.2f} oscillations")
+                print(f"  Q_count = 2 × N_count = {2*N_count_direct:.2f} ± {2*sigma_N_direct:.2f}")
+            else:
+                # Degenerate case
+                N_count_direct = idx_last_above + 1
+                sigma_N_direct = 0.5
+                print(f"Method 1 (Direct counting): Degenerate bracket")
+                print(f"  N_count ≈ {N_count_direct:.2f} ± {sigma_N_direct:.2f}")
+        else:
+            # Gap in the bracket - find all peaks near 20% threshold
+            # Use a band around the target to find all peaks that could be the crossing
+            tolerance = 0.05 * target  # ±5% tolerance around 20% threshold
+            near_threshold = np.abs(A_peaks - target) <= tolerance
+            
+            if np.any(near_threshold):
+                # Multiple peaks near threshold
+                indices_near = np.where(near_threshold)[0]
+                N_min = indices_near[0] + 1
+                N_max = indices_near[-1] + 1
+                N_count_direct = 0.5 * (N_min + N_max)
+                
+                # Uncertainty is the spread of peaks near threshold
+                sigma_N_direct = 0.5 * (N_max - N_min) if N_max > N_min else 1.0
+                
+                # Add measurement uncertainty contribution
+                sigma_measurement = np.sqrt(sigma_N_direct**2 + 0.5**2)  # add ~0.5 for interpolation uncertainty
+                sigma_N_direct = sigma_measurement
+                
+                print(f"Method 1 (Direct counting with multiple peaks near 20%):")
+                print(f"  Found {len(indices_near)} peaks near 20% threshold (peaks #{N_min} to #{N_max})")
+                print(f"  Range of crossing: [{N_min}, {N_max}] peaks")
+                print(f"  N_count (to 20%) = {N_count_direct:.2f} ± {sigma_N_direct:.2f} oscillations")
+                print(f"  Q_count = 2 × N_count = {2*N_count_direct:.2f} ± {2*sigma_N_direct:.2f}")
+            else:
+                # Use simple midpoint estimate
+                N_count_direct = 0.5 * (idx_last_above + 1 + idx_first_below + 1)
+                sigma_N_direct = 0.5 * abs(idx_first_below - idx_last_above)
+                print(f"Method 1 (Direct counting with gap to 20%):")
+                print(f"  Last above: peak #{idx_last_above+1}, First below: peak #{idx_first_below+1}")
+                print(f"  N_count (to 20%) = {N_count_direct:.2f} ± {sigma_N_direct:.2f} oscillations")
+                print(f"  Q_count = 2 × N_count = {2*N_count_direct:.2f} ± {2*sigma_N_direct:.2f}")
+        
+        # For visualization - peaks near the crossing
+        band_lo = 0.90 * target
+        band_hi = 1.10 * target
+        in_band = (A_peaks >= band_lo) & (A_peaks <= band_hi)
+        t_4 = t_peaks[in_band]
+        A_4 = A_peaks[in_band]
+        
     else:
+        # Can't bracket
         if A_peaks.size:
             k = int(np.argmin(np.abs(A_peaks - target)))
-            N_est = k + 1
-            sigma_N = 1.0
-            Q_count = N_est
-            sigma_Q_count = sigma_N
+            N_count_direct = k + 1
+            sigma_N_direct = 1.0
             t_4 = t_peaks[[k]]
             A_4 = A_peaks[[k]]
-            print("\nCould not bracket 4% with error bars; using nearest peak.")
-            print(f"N_count (to 4%) ≈ {N_est} ± {sigma_N}")
-            print(f"Q_count (oscillations to 4%) ≈ {Q_count:.2f} ± {sigma_Q_count:.2f}")
+            print(f"Method 1 (Direct counting): Could not bracket 20%")
+            print(f"  Closest peak: #{k+1}, A={A_peaks[k]:.6f} rad")
+            print(f"  N_count (to 20%) ≈ {N_count_direct} ± {sigma_N_direct}")
+            print(f"  Q_count = 2 × N_count ≈ {2*N_count_direct} ± {2*sigma_N_direct}")
+        else:
+            N_count_direct = np.nan
+            sigma_N_direct = np.nan
+    
+    # METHOD 2: Calculate from exponential fit (BETTER - uses all data)
+    # From A(t) = A₀ exp(-t/τ), at 20%: 0.20 = exp(-t_20%/τ)
+    # Solving: t_20% = τ ln(5) = τ × 1.6094
+    # Number of oscillations to 20%: N_20% = t_20% / T_avg
+    # Q = 2 × N_20%
+    if np.isfinite(tau_fit) and np.isfinite(A_fit):
+        # Calculate time to reach 20% of fitted initial amplitude
+        A0_fit = A_fit  # fitted initial amplitude
+        target_fit_20 = 0.20 * A0_fit
+        
+        # t = τ ln(A₀/A_target) = τ ln(A₀/(0.20×A₀)) = τ ln(5)
+        t_to_20_percent = tau_fit * np.log(5.0)
+        
+        # We need T_bar (calculated below), so we'll compute this after T_bar is calculated
+        # Store for now
+        t_20_from_fit = t_to_20_percent
+    else:
+        t_20_from_fit = np.nan
+    
+    # Use Method 1 results for now (multiply by 2 for Q)
+    Q_count = 2 * N_count_direct if np.isfinite(N_count_direct) else np.nan
+    sigma_Q_count = 2 * sigma_N_direct if np.isfinite(sigma_N_direct) else np.nan
 else:
     t_4 = A_4 = np.array([])
     target = np.nan
     Q_count = sigma_Q_count = np.nan
+    N_count_direct = np.nan
+    sigma_N_direct = np.nan
+    t_4_from_fit = np.nan
 
 # ============================================================
-#     Mean period from FIRST 10 oscillations (± uncertainty)
+#  AVERAGE PERIOD FROM FIRST 10 OSCILLATIONS (± uncertainty)
 # ============================================================
+print("\n" + "="*60)
+print("AVERAGE PERIOD FROM FIRST 10 OSCILLATIONS")
+print("="*60)
+
 if have_peaks and t_peaks.size >= 2:
     N_needed = min(11, t_peaks.size)     # 10 periods need 11 maxima
     periods  = np.diff(t_peaks[:N_needed])
@@ -359,8 +518,18 @@ if have_peaks and t_peaks.size >= 2:
         sigma_T_bar = float(np.sqrt(sigma_time_mean**2 + sigma_sample_mean**2))
         t_start = t_peaks[0]
         t_end   = t_peaks[N_used]
-        print(f"\nMean period (first {N_used} oscillations): T̄ = {T_bar:.6g} ± {sigma_T_bar:.2g} s")
-        print(f"Used maxima window: start t = {t_start:.3f} s, end t = {t_end:.3f} s")
+        
+        print(f"\nNumber of oscillations used: {N_used}")
+        print(f"Time window: {t_start:.3f} s to {t_end:.3f} s")
+        print(f"\nIndividual periods:")
+        for i, period in enumerate(periods, 1):
+            print(f"  Period {i}: {period:.6f} s")
+        print(f"\n>>> AVERAGE PERIOD: T̄ = {T_bar:.6f} ± {sigma_T_bar:.5f} s <<<")
+        print(f"\nUncertainty breakdown:")
+        print(f"  Timing uncertainty: ±{sigma_time_mean:.5f} s")
+        print(f"  Sample variability: ±{sigma_sample_mean:.5f} s")
+        print(f"  Combined uncertainty: ±{sigma_T_bar:.5f} s")
+        print("="*60)
     else:
         T_bar = sigma_T_bar = np.nan
         print("\nNot enough maxima to form periods from the start window.")
@@ -369,14 +538,58 @@ else:
     print("\nNot enough maxima to compute the first-10 average.")
 
 # ============================================================
-#                         Q2
+#    Q_count METHOD 2: Using exponential fit (RECOMMENDED)
+# ============================================================
+if np.isfinite(t_20_from_fit) and np.isfinite(T_bar) and np.isfinite(tau_fit):
+    # Number of oscillations to reach 20%
+    N_to_20_percent = t_20_from_fit / T_bar
+    
+    # Uncertainty propagation: N_20% = (τ ln(5)) / T
+    # ∂N/∂τ = ln(5) / T
+    # ∂N/∂T = -τ ln(5) / T²
+    ln_5 = np.log(5.0)
+    dN_dtau = ln_5 / T_bar
+    dN_dT = -tau_fit * ln_5 / (T_bar**2)
+    
+    # Calculate individual contributions
+    contrib_tau = dN_dtau * sigma_tau
+    contrib_T = dN_dT * sigma_T_bar
+    
+    # Combined uncertainty for N_20%
+    sigma_N_20 = np.sqrt(contrib_tau**2 + contrib_T**2)
+    
+    # Q = 2 × N_20%
+    Q_count_fit = 2 * N_to_20_percent
+    sigma_Q_count_fit = 2 * sigma_N_20
+    
+    print(f"\nMethod 2 (From exponential fit - RECOMMENDED):")
+    print(f"  Time to 20%: t = τ ln(5) = {t_20_from_fit:.3f} s")
+    print(f"  N_count (to 20%) = t/T̄ = {N_to_20_percent:.2f} ± {sigma_N_20:.2f} oscillations")
+    print(f"  Q_count = 2 × N_count = {Q_count_fit:.2f} ± {sigma_Q_count_fit:.2f}")
+    print(f"  Uncertainty breakdown:")
+    print(f"    From τ uncertainty: σ_τ = {sigma_tau:.3f} s → contributes ±{abs(contrib_tau):.2f} to N, ±{abs(2*contrib_tau):.2f} to Q")
+    print(f"    From T uncertainty: σ_T = {sigma_T_bar:.4f} s → contributes ±{abs(contrib_T):.2f} to N, ±{abs(2*contrib_T):.2f} to Q")
+    print(f"    Relative uncertainty: {(sigma_Q_count_fit/Q_count_fit)*100:.2f}%")
+    
+    # Update Q_count to use the better method
+    Q_count = Q_count_fit
+    sigma_Q_count = sigma_Q_count_fit
+else:
+    N_to_20_percent = np.nan
+    sigma_N_20 = np.nan
+    Q_count_fit = np.nan
+    sigma_Q_count_fit = np.nan
+    print("\nMethod 2: Cannot calculate - missing exponential fit or period")
+
+# ============================================================
+#                         Q2 (from τ and T)
 # ============================================================
 if np.isfinite(tau_fit) and np.isfinite(T_bar):
     Q2 = np.pi * tau_fit / T_bar
     dQ_dtau = np.pi / T_bar
     dQ_dT   = -np.pi * tau_fit / (T_bar**2)
     sigma_Q2 = np.sqrt((dQ_dtau * sigma_tau)**2 + (dQ_dT * sigma_T_bar)**2)
-    print(f"Q2 = {Q2:.6g} ± {sigma_Q2:.2g}")
+    print(f"\nQ2 (from π×τ/T) = {Q2:.6g} ± {sigma_Q2:.2g}")
 else:
     Q2 = sigma_Q2 = np.nan
 
@@ -421,12 +634,11 @@ if have_peaks:
     y_peaks_abs = baseline[peak_idx] + sign_at_peaks * A_peaks
     plt.scatter(t_peaks, y_peaks_abs, s=25, color='tab:green', label='Pendulum peaks', zorder=5)
 
-plt.xlabel('Time (s)', fontsize=24)
-plt.ylabel(r'Angle $\theta(t)$ [rad]', fontsize=24)
-plt.title('Amplitude Vs. Time - Cosine and Exponential Fits', fontsize=26)
-plt.tick_params(axis='both', which='major', labelsize=18)
+plt.xlabel('Time (s)', fontsize=44)
+plt.ylabel('Amplitude (rad)', fontsize=44)
+plt.tick_params(axis='both', which='major', labelsize=36)
 plt.grid(True, alpha=0.25)
-plt.legend(loc='upper right', frameon=True, fontsize=16)
+plt.legend(loc='upper right', frameon=True, fontsize=36)
 plt.tight_layout()
 plt.show()
 
@@ -449,13 +661,12 @@ if have_peaks:
 
     if t_4.size > 0:
         ax1.scatter(t_4, A_4, s=90, facecolor='orange', edgecolor='black', linewidth=1.0,
-                    label='4% amplitude peaks (±1% band + σ overlap)', zorder=5)
+                    label='20% amplitude peaks (±1% band)', zorder=5)
 
-    ax1.set_ylabel('Peak amplitude above baseline [rad]', fontsize=20)
-    ax1.set_title('Exponential Fit on Baseline-Relative Maxima', fontsize=22)
-    ax1.tick_params(axis='both', which='major', labelsize=16)
+    ax1.set_ylabel('Amplitude (rad)', fontsize=26)
+    ax1.tick_params(axis='both', which='major', labelsize=20)
     ax1.grid(True, alpha=0.25)
-    ax1.legend(loc='upper right', frameon=True, fontsize=14)
+    ax1.legend(loc='upper right', frameon=True, fontsize=20)
 
     ax2.axhline(0, color='k', lw=1)
     ax2.errorbar(
@@ -464,12 +675,12 @@ if have_peaks:
         fmt='o', ms=3, ecolor='lightgray', elinewidth=1,
         capsize=0, color='black', label='Residuals (data - fit)'
     )
-    ax2.set_xlabel('Time (s)', fontsize=20)
-    ax2.set_ylabel('Residual [rad]', fontsize=20)
-    ax2.set_title('Residuals of Exponential Fit (relative)', fontsize=22)
-    ax2.tick_params(axis='both', which='major', labelsize=16)
+    ax2.set_xlabel('Time (s)', fontsize=26)
+    ax2.set_ylabel('Residual (rad)', fontsize=26)
+    ax2.set_title('Residuals of Exponential Fit (relative)', fontsize=26)
+    ax2.tick_params(axis='both', which='major', labelsize=20)
     ax2.grid(True, axis='y', linestyle=':')
-    ax2.legend(loc='upper right', frameon=True, fontsize=14)
+    ax2.legend(loc='upper right', frameon=True, fontsize=20)
 
     fig.tight_layout()
     plt.show()
