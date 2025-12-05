@@ -62,7 +62,7 @@ fig1, (ax1, ax2) = plt.subplots(2, 1, gridspec_kw={'height_ratios': [2, 1]})
 
 ax1.errorbar(length, period, yerr=period_err, xerr=length_err, 
              fmt="o", label="Measured data", color="blue", markersize=10)
-ax1.plot(xs, curve, label=f"Best fit: T = {popt[0]:.3f}L$^{{{popt[1]:.3f}}}$", 
+ax1.plot(xs, curve, label=f"Best fit: T = {popt[0]:.2f}L$^{{{popt[1]:.2f}}}$", 
          color="red", linewidth=3)
 ax1.legend(loc='upper left', fontsize=28)
 ax1.set_xlabel("Length (m)", fontsize=36)
